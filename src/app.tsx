@@ -49,6 +49,7 @@ function FileInput(props: dialog.OpenDialogOptions & { onChange?: (path?: string
 function useIPC<T>(
   name: string,
   opts?: {
+    onSend?: (args: InvokeArgs) => void
     onSuccess?: (data: T) => void
     onError?: (err: string) => void
   },
@@ -61,6 +62,7 @@ function useIPC<T>(
     setError(undefined)
     setIsLoading(true)
     try {
+      opts?.onSend?.(args)
       const res = await invoke<T>(name, args)
       setData(res)
       opts?.onSuccess?.(res)
@@ -88,6 +90,9 @@ export function App() {
   const [error, setError] = useState<string>()
 
   const headers = useIPC<string[]>("load_csv", {
+    onSend() {
+      setError(undefined)
+    },
     onSuccess() {
       setWantHeaders([])
     },
@@ -97,6 +102,9 @@ export function App() {
   })
 
   const generate = useIPC<string>("generate", {
+    onSend() {
+      setError(undefined)
+    },
     onSuccess(path) {
       setImageSrc(convertFileSrc(path))
     },
@@ -132,11 +140,11 @@ export function App() {
   return (
     <main className="relative h-screen flex flex-col items-center">
       <div className="container grid grid-cols-1 lg:grid-cols-2 pt-8 gap-4">
-        <Card className="flex flex-col h-full">
+        <Card className="flex flex-col h-full justify-between">
           <CardContent className="flex flex-col gap-y-8">
             <FieldGroup className="grid grid-cols-2">
               <Field>
-                <FieldLabel>Log file</FieldLabel>
+                <FieldLabel>CSV</FieldLabel>
                 <FileInput
                   onChange={async (path) => {
                     if (path !== csvPath) {
@@ -168,7 +176,7 @@ export function App() {
               <FieldGroup>
                 <Field>
                   <FieldLabel>Headers</FieldLabel>
-                  <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(100px,1fr))] max-h-52 overflow-auto">
+                  <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(100px,1fr))] max-h-64 overflow-auto">
                     {headers.data.map((header, i) => (
                       <Field key={header} orientation="horizontal">
                         <Checkbox
