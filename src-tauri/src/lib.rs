@@ -148,9 +148,9 @@ struct AppState {
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
-    trace!(?data_dir);
-
+    fs::create_dir_all(&data_dir)?;
     setup_logging(&data_dir);
+    trace!(?data_dir);
 
     const FONT_DATA: &[u8] = include_bytes!("../../public/arial.ttf");
     let font = FontArc::try_from_slice(FONT_DATA)?;
