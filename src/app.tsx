@@ -147,8 +147,8 @@ export function App() {
                 <FieldLabel>CSV</FieldLabel>
                 <FileInput
                   onChange={async (path) => {
-                    if (path !== csvPath) {
-                      setCsvPath(path)
+                    setCsvPath(path)
+                    if (path && path !== csvPath) {
                       await headers.send({ path })
                     }
                   }}
@@ -195,6 +195,12 @@ export function App() {
                 </Field>
               </FieldGroup>
             )}
+            <FieldGroup className="grid grid-cols-2">
+              <Field>
+                <FieldLabel>Time</FieldLabel>
+                <Input type="time" step={1} />
+              </Field>
+            </FieldGroup>
             {error && (
               <div className="text-destructive flex items-center gap-x-2">
                 <CircleAlertIcon />
@@ -225,7 +231,7 @@ export function App() {
         </Card>
         <Card className="relative py-0">
           {imageSrc ? (
-            <img className="object-cover w-full h-full" src={imageSrc} />
+            <img className="object-contain w-full h-full" src={imageSrc} />
           ) : (
             <div className="flex w-full h-full items-center justify-center text-muted-foreground self-auto">
               Image preview
