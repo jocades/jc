@@ -86,6 +86,8 @@ export function App() {
   const [csvPath, setCsvPath] = useState<string>()
   const [imagePath, setImagePath] = useState<string>()
   const [wantHeaders, setWantHeaders] = useState<number[]>([])
+  const [time, setTime] = useState<string>("00:00:00")
+  const [timeTouched, setTimeTouched] = useState(false)
   const [imageSrc, setImageSrc] = useState<string>()
   const [error, setError] = useState<string>()
 
@@ -123,7 +125,10 @@ export function App() {
   })
 
   async function onSubmit() {
-    if (!imagePath && !csvPath) {
+    const normTime = timeTouched ? time : null
+    console.log({ imagePath, csvPath, time: normTime })
+
+    if (!imagePath || !csvPath) {
       setError("Provide both an image and a CSV.")
       return
     }
@@ -134,7 +139,7 @@ export function App() {
     }
 
     const indices = wantHeaders.sort((a, b) => a - b)
-    await generate.send({ imagePath, indices })
+    await generate.send({ imagePath, indices, time: normTime })
   }
 
   return (
@@ -163,11 +168,7 @@ export function App() {
                       extensions: ["jpg", "jpeg", "png", "webp"],
                     },
                   ]}
-                  onChange={(path) => {
-                    if (path !== imagePath) {
-                      setImagePath(path)
-                    }
-                  }}
+                  onChange={(path) => setImagePath(path)}
                 />
               </Field>
             </FieldGroup>
@@ -198,7 +199,15 @@ export function App() {
             <FieldGroup className="grid grid-cols-2">
               <Field>
                 <FieldLabel>Time</FieldLabel>
-                <Input type="time" step={1} />
+                <Input
+                  type="time"
+                  step={1}
+                  value={time}
+                  onChange={(e) => {
+                    setTime(e.target.value)
+                    setTimeTouched(true)
+                  }}
+                />
               </Field>
             </FieldGroup>
             {error && (
@@ -229,13 +238,13 @@ export function App() {
             </Button>
           </CardFooter>
         </Card>
-        <Card className="relative py-0">
-          {imageSrc ? (
+        <Card className="items-center justify-center py-0">
+          {generate.isLoading ? (
+            <Spinner className="size-6 text-muted-foreground" />
+          ) : imageSrc ? (
             <img className="object-contain w-full h-full" src={imageSrc} />
           ) : (
-            <div className="flex w-full h-full items-center justify-center text-muted-foreground self-auto">
-              Image preview
-            </div>
+            <div className="text-muted-foreground">Image preview</div>
           )}
         </Card>
       </div>

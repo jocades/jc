@@ -2,121 +2,213 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{Manager, State};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, trace};
+use tracing::{error, instrument, trace};
 
 use ab_glyph::{FontArc, PxScale};
 use image::Rgba;
 use imageproc::drawing::draw_text_mut;
 
-#[derive(Debug)]
-enum Event {
-    Csv(PathBuf, oneshot::Sender<Result<Vec<String>, String>>),
-    Generate(
-        PathBuf,
-        Vec<usize>,
-        oneshot::Sender<Result<PathBuf, String>>,
-    ),
-    Save(PathBuf, oneshot::Sender<Result<PathBuf, String>>),
-}
+mod worker {
+    use super::*;
+    use anyhow::{ensure, Context, Result};
+    use tracing::{trace_span, Instrument};
 
-fn worker(
-    handle: AppHandle,
-    mut rx: mpsc::Receiver<Event>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let state = handle.state::<AppState>();
+    #[derive(Debug)]
+    pub enum Event {
+        Csv(PathBuf, oneshot::Sender<Result<Vec<String>>>),
+        Generate(
+            PathBuf,
+            Vec<usize>,
+            Option<String>,
+            oneshot::Sender<Result<PathBuf>>,
+        ),
+        Save(PathBuf, oneshot::Sender<Result<()>>),
+    }
 
-    let mut csv_rdr: Option<csv::Reader<File>> = None;
+    pub fn spawn(font: FontArc, data_dir: &Path) -> mpsc::Sender<Event> {
+        let (tx, rx) = mpsc::channel(100);
 
-    let outputs_dir = state.data_dir.join("outputs");
-    let output_file = outputs_dir.join("test.png");
+        let mut worker = Worker {
+            rx,
+            font,
+            gen_dir: data_dir.join("gen"),
+            csv: None,
+        };
 
-    while let Some(event) = rx.blocking_recv() {
-        match event {
-            Event::Csv(path, resp) => {
-                let f = File::open(&path)?;
-                let mut rdr = csv::Reader::from_reader(f);
-                let headers: Vec<String> = match rdr.headers() {
-                    Ok(record) => record.iter().map(|h| h.to_string()).collect(),
-                    Err(e) => {
-                        error!(cause = %e, "csv error");
-                        _ = resp.send(Err(e.to_string()));
-                        continue;
-                    }
-                };
-                _ = resp.send(Ok(headers));
-                csv_rdr = Some(rdr);
+        thread::spawn(move || {
+            if let Err(e) = worker.run() {
+                error!(cause = %e, "worker error");
             }
-            Event::Generate(image_path, indices, resp) => {
-                let Some(csv_rdr) = &mut csv_rdr else {
-                    error!("no csv reader");
-                    continue;
-                };
+        });
 
-                let mut img = image::open(&image_path)?.to_rgba8();
-                let scale = PxScale::from(92.0);
-                let color = Rgba([255, 255, 0, 255]);
+        tx
+    }
 
-                let headers = csv_rdr.headers()?.clone();
-                let first_row = csv_rdr.records().next().unwrap()?;
+    struct Worker {
+        font: FontArc,
+        gen_dir: PathBuf,
+        rx: mpsc::Receiver<Event>,
+        csv: Option<LoadedCsv>,
+    }
 
-                for (i, &col) in indices.iter().enumerate() {
-                    let offset_y = (i as i32 + 1) * 92;
-                    let k = headers[col].trim();
-                    let v = first_row[col].trim();
-                    let text = format!("{k}: {v}");
-                    draw_text_mut(&mut img, color, 92, offset_y, scale, &state.font, &text);
+    struct LoadedCsv {
+        _path: PathBuf,
+        headers: Vec<String>,
+        records: Vec<csv::StringRecord>,
+    }
+
+    impl Worker {
+        fn run(&mut self) -> Result<()> {
+            while let Some(event) = self.rx.blocking_recv() {
+                match event {
+                    Event::Csv(csv_path, resp) => {
+                        trace!(?csv_path, "Event::Csv");
+                        _ = resp.send(self.load_csv(csv_path));
+                    }
+                    Event::Generate(img_path, indices, time, resp) => {
+                        trace!(?img_path, ?indices, ?time, "Event::Generate");
+                        _ = resp.send(self.generate(img_path, indices, time));
+                    }
+                    Event::Save(dest, resp) => {
+                        trace!(?dest, "Event::Save");
+                        _ = resp.send(self.save(dest));
+                    }
                 }
-
-                fs::create_dir_all(&outputs_dir).unwrap();
-                img.save(&output_file)?;
-
-                trace!(?output_file, "generated");
-
-                _ = resp.send(Ok(output_file.clone()));
             }
-            Event::Save(dest, resp) => {
-                match fs::copy(&output_file, &dest) {
-                    Ok(_) => {
-                        trace!(?dest, "saved");
-                        let _ = resp.send(Ok(dest));
-                    }
-                    Err(e) => _ = resp.send(Err(e.to_string())),
-                };
+            Ok(())
+        }
+
+        #[instrument(skip(self))]
+        fn load_csv(&mut self, csv_path: PathBuf) -> Result<Vec<String>> {
+            let file = File::open(&csv_path)?;
+            let mut rdr = csv::Reader::from_reader(file);
+
+            let headers: Vec<_> = rdr.headers()?.iter().map(str::to_owned).collect();
+
+            let mut records = Vec::with_capacity(headers.len());
+            for record in rdr.records() {
+                records.push(record?);
             }
+
+            self.csv = Some(LoadedCsv {
+                _path: csv_path,
+                headers: headers.clone(),
+                records,
+            });
+
+            Ok(headers)
+        }
+
+        #[instrument(skip(self))]
+        fn generate(
+            &self,
+            img_path: PathBuf,
+            indices: Vec<usize>,
+            time: Option<String>,
+        ) -> Result<PathBuf> {
+            ensure!(!indices.is_empty(), "Header indices are empty");
+
+            let csv = self.csv.as_ref().context("Load a CSV before generating")?;
+
+            let record = match &time {
+                Some(stamp) => {
+                    let time_index = csv
+                        .headers
+                        .iter()
+                        .position(|header| header == "time")
+                        .context("CSV missing a time column")?;
+
+                    csv.records
+                        .iter()
+                        .find(|r| r.get(time_index) == Some(stamp))
+                        .with_context(|| format!("No record found with time: {stamp}"))?
+                }
+                None => csv
+                    .records
+                    .first()
+                    .context("CSV does not contain any records")?,
+            };
+
+            let mut img = image::open(&img_path)?.to_rgba8();
+            let scale = PxScale::from(92.0);
+            let color = Rgba([255, 255, 0, 255]);
+            let offset = 92;
+
+            for (i, &col) in indices.iter().enumerate() {
+                let header = csv
+                    .headers
+                    .get(col)
+                    .with_context(|| format!("Missing header for column: {col}"))?
+                    .trim();
+
+                let value = record
+                    .get(col)
+                    .with_context(|| format!("Missing value for column: {col}"))?
+                    .trim();
+
+                let text = format!("{header}: {value}");
+
+                draw_text_mut(
+                    &mut img,
+                    color,
+                    offset,
+                    offset * (i as i32 + 1),
+                    scale,
+                    &self.font,
+                    &text,
+                );
+            }
+
+            fs::create_dir_all(&self.gen_dir)?;
+
+            let out_path = self.gen_dir.join("out.png");
+            img.save(&out_path)?;
+            trace!(?out_path, "generated");
+
+            Ok(out_path)
+        }
+
+        #[instrument(skip(self), level = "trace")]
+        fn save(&self, dest: PathBuf) -> Result<()> {
+            let src = self.gen_dir.join("out.png");
+            fs::copy(&src, &dest)?;
+            Ok(())
         }
     }
-    Ok(())
 }
+
+use worker::Event;
 
 #[tauri::command]
 async fn load_csv(path: PathBuf, state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let (tx, rx) = oneshot::channel();
-    state.tx.send(Event::Csv(path, tx)).await.unwrap();
-    rx.await.unwrap()
+    state.worker_tx.send(Event::Csv(path, tx)).await.unwrap();
+    rx.await.unwrap().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn generate(
     image_path: PathBuf,
     indices: Vec<usize>,
+    time: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<PathBuf, String> {
     let (tx, rx) = oneshot::channel();
     state
-        .tx
-        .send(Event::Generate(image_path, indices, tx))
+        .worker_tx
+        .send(Event::Generate(image_path, indices, time, tx))
         .await
         .unwrap();
-    rx.await.unwrap()
+    rx.await.unwrap().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn save(dest: PathBuf, state: State<'_, AppState>) -> Result<PathBuf, String> {
+async fn save(dest: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
     let (tx, rx) = oneshot::channel();
-    state.tx.send(Event::Save(dest, tx)).await.unwrap();
-    rx.await.unwrap()
+    state.worker_tx.send(Event::Save(dest, tx)).await.unwrap();
+    rx.await.unwrap().map_err(|e| e.to_string())
 }
 
 fn setup_logging(data_dir: &Path) {
@@ -141,34 +233,24 @@ fn setup_logging(data_dir: &Path) {
 }
 
 struct AppState {
-    font: FontArc,
-    data_dir: PathBuf,
-    tx: mpsc::Sender<Event>,
+    worker_tx: mpsc::Sender<Event>,
 }
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     fs::create_dir_all(&data_dir)?;
+
     setup_logging(&data_dir);
     trace!(?data_dir);
 
     const FONT_DATA: &[u8] = include_bytes!("../../public/arial.ttf");
     let font = FontArc::try_from_slice(FONT_DATA)?;
+    trace!("loaded font");
 
-    trace!("loaded font data");
+    let worker_tx = worker::spawn(font, &data_dir);
+    trace!("spawned worker");
 
-    let (tx, rx) = mpsc::channel(100);
-    app.manage(AppState { data_dir, font, tx });
-
-    {
-        let handle = app.handle().clone();
-        thread::spawn(move || {
-            if let Err(e) = worker(handle, rx) {
-                error!(cause = %e, "worker error");
-            }
-        });
-        trace!("spawned worker");
-    }
+    app.manage(AppState { worker_tx });
 
     Ok(())
 }
