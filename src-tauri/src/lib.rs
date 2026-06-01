@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -86,8 +86,10 @@ mod worker {
         }
 
         fn load_csv(&mut self, csv_path: PathBuf) -> Result<Vec<String>> {
-            let file = File::open(&csv_path)?;
-            let mut rdr = csv::Reader::from_reader(file);
+            let mut rdr = csv::ReaderBuilder::new()
+                .flexible(true)
+                .trim(csv::Trim::All)
+                .from_path(&csv_path)?;
 
             let headers: Vec<_> = rdr.headers()?.iter().map(str::to_owned).collect();
 
@@ -210,9 +212,14 @@ mod worker {
         let offset = 92;
 
         for (i, &col) in opts.columns.iter().enumerate() {
-            let k = csv.headers[col].trim();
-            let v = record[col].trim();
-            let text = format!("{k}: {v}");
+            let key = csv
+                .headers
+                .get(col)
+                .context("Missing header at column: {col}")?;
+            let value = record
+                .get(col)
+                .context("Missing record value at column: {col}")?;
+            let text = format!("{key}: {value}");
             draw_text_mut(
                 &mut image,
                 color,
