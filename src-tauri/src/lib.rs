@@ -7,26 +7,23 @@ use tauri::{Manager, State};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, trace};
 
-use ab_glyph::{FontArc, PxScale};
-use image::Rgba;
-use imageproc::drawing::draw_text_mut;
-
 mod worker {
     use super::*;
-    use anyhow::{Context, Result};
-    use image::ImageBuffer;
+    use ab_glyph::{FontArc, PxScale};
+    use anyhow::{bail, Context, Result};
+    use image::{ImageBuffer, Rgb};
+    use imageproc::drawing::draw_text_mut;
 
     pub enum Event {
         Csv(PathBuf, oneshot::Sender<Result<Vec<String>>>),
-        Preview(PathBuf, Vec<usize>, oneshot::Sender<Result<PathBuf>>),
+        Preview(PathBuf, Options, oneshot::Sender<Result<PathBuf>>),
         Generate(
             Vec<PathBuf>,
-            Vec<usize>,
+            Options,
             PathBuf,
             tauri::ipc::Channel<usize>,
             oneshot::Sender<Result<PathBuf>>,
         ),
-        Save(PathBuf, oneshot::Sender<Result<()>>),
     }
 
     pub fn spawn(font: FontArc, data_dir: &Path) -> mpsc::Sender<Event> {
@@ -70,22 +67,18 @@ mod worker {
                         trace!(?csv_path, "Event::Csv");
                         _ = res.send(self.load_csv(csv_path));
                     }
-                    Event::Preview(image_path, columns, resp) => {
-                        trace!(?image_path, ?columns, "Event::Preview");
-                        _ = resp.send(self.preview(image_path, columns));
+                    Event::Preview(image_path, opts, resp) => {
+                        trace!(?image_path, ?opts, "Event::Preview");
+                        _ = resp.send(self.preview(image_path, opts));
                     }
-                    Event::Generate(image_paths, columns, out_dir, on_progress, res) => {
+                    Event::Generate(image_paths, opts, out_dir, on_progress, res) => {
                         trace!(
                             count = image_paths.len(),
-                            ?columns,
+                            ?opts,
                             ?out_dir,
                             "Event::Generate"
                         );
-                        _ = res.send(self.generate(image_paths, columns, out_dir, on_progress));
-                    }
-                    Event::Save(dest, res) => {
-                        trace!(?dest, "Event::Save");
-                        _ = res.send(self.save(dest));
+                        _ = res.send(self.generate(image_paths, opts, out_dir, on_progress));
                     }
                 }
             }
@@ -124,11 +117,11 @@ mod worker {
             Ok(headers)
         }
 
-        fn preview(&self, image_path: PathBuf, mut columns: Vec<usize>) -> Result<PathBuf> {
+        fn preview(&self, image_path: PathBuf, mut opts: Options) -> Result<PathBuf> {
             let csv = self.csv.as_ref().context("Load a CSV before previewing")?;
-            columns.sort();
+            opts.columns.sort();
 
-            let image = render(&image_path, csv, &columns, &self.font)?;
+            let image = render(&image_path, csv, &opts, &self.font)?;
 
             fs::create_dir_all(&self.gen_dir)?;
             let out_path = self.gen_dir.join("preview.png");
@@ -142,12 +135,12 @@ mod worker {
         fn generate(
             &self,
             image_paths: Vec<PathBuf>,
-            mut columns: Vec<usize>,
+            mut opts: Options,
             out_dir: PathBuf,
             on_progress: tauri::ipc::Channel<usize>,
         ) -> Result<PathBuf> {
             let csv = self.csv.as_ref().context("Load a CSV before generating")?;
-            columns.sort();
+            opts.columns.sort();
 
             for (i, path) in image_paths.iter().enumerate() {
                 let file_stem = path
@@ -158,7 +151,7 @@ mod worker {
                 let file_name = format!("{file_stem}.annotated.png");
                 let out_path = out_dir.join(file_name);
 
-                let image = render(&path, csv, &columns, &self.font)?;
+                let image = render(&path, csv, &opts, &self.font)?;
                 image.save(&out_path)?;
                 trace!(?out_path, "generated");
 
@@ -166,12 +159,6 @@ mod worker {
             }
 
             Ok(out_dir)
-        }
-
-        fn save(&self, dest: PathBuf) -> Result<()> {
-            let src = self.gen_dir.join("out.png");
-            fs::copy(&src, &dest)?;
-            Ok(())
         }
     }
 
@@ -194,9 +181,9 @@ mod worker {
     fn render(
         image_path: &Path,
         csv: &LoadedCsv,
-        columns: &[usize],
+        opts: &Options,
         font: &FontArc,
-    ) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
         let (_, _, time) = parse_path_name(&image_path).context("Failed to parse file name")?;
 
         let record_index = csv
@@ -206,12 +193,23 @@ mod worker {
             .with_context(|| format!("No record found with time: {time}"))?;
 
         let record = &csv.records[record_index];
-        let mut image = image::open(&image_path)?.to_rgba8();
+
+        let mut image = {
+            let buffer = image::open(&image_path)?.to_rgb8();
+            match opts.rotation {
+                0 => buffer,
+                1 => image::imageops::rotate90(&buffer),
+                2 => image::imageops::rotate180(&buffer),
+                3 => image::imageops::rotate270(&buffer),
+                n => bail!("Invalid rotation value: {n}"),
+            }
+        };
+
         let scale = PxScale::from(92.0);
-        let color = Rgba([0, 255, 0, 255]);
+        let color = Rgb(opts.text_color);
         let offset = 92;
 
-        for (i, &col) in columns.iter().enumerate() {
+        for (i, &col) in opts.columns.iter().enumerate() {
             let k = csv.headers[col].trim();
             let v = record[col].trim();
             let text = format!("{k}: {v}");
@@ -241,6 +239,14 @@ impl From<anyhow::Error> for Error {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Options {
+    columns: Vec<usize>,
+    text_color: [u8; 3],
+    rotation: u8,
+}
+
 #[tauri::command]
 async fn load_csv(path: PathBuf, state: State<'_, AppState>) -> Result<Vec<String>, Error> {
     let (tx, rx) = oneshot::channel();
@@ -251,13 +257,14 @@ async fn load_csv(path: PathBuf, state: State<'_, AppState>) -> Result<Vec<Strin
 #[tauri::command]
 async fn preview(
     image_path: PathBuf,
-    columns: Vec<usize>,
+    options: Options,
     state: State<'_, AppState>,
 ) -> Result<PathBuf, Error> {
+    trace!(?options);
     let (tx, rx) = oneshot::channel();
     state
         .worker_tx
-        .send(Event::Preview(image_path, columns, tx))
+        .send(Event::Preview(image_path, options, tx))
         .await
         .unwrap();
     Ok(rx.await.unwrap()?)
@@ -266,7 +273,7 @@ async fn preview(
 #[tauri::command]
 async fn generate(
     image_paths: Vec<PathBuf>,
-    columns: Vec<usize>,
+    options: Options,
     out_dir: PathBuf,
     on_progress: tauri::ipc::Channel<usize>,
     state: State<'_, AppState>,
@@ -276,7 +283,7 @@ async fn generate(
         .worker_tx
         .send(Event::Generate(
             image_paths,
-            columns,
+            options,
             out_dir,
             on_progress,
             tx,
@@ -284,13 +291,6 @@ async fn generate(
         .await
         .unwrap();
     Ok(rx.await.unwrap()?)
-}
-
-#[tauri::command]
-async fn save(dest: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
-    let (tx, rx) = oneshot::channel();
-    state.worker_tx.send(Event::Save(dest, tx)).await.unwrap();
-    rx.await.unwrap().map_err(|e| e.to_string())
 }
 
 fn setup_logging(data_dir: &Path) {
@@ -326,7 +326,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     trace!(?data_dir);
 
     const FONT_DATA: &[u8] = include_bytes!("../../public/arial.ttf");
-    let font = FontArc::try_from_slice(FONT_DATA)?;
+    let font = ab_glyph::FontArc::try_from_slice(FONT_DATA)?;
     trace!("loaded font");
 
     let worker_tx = worker::spawn(font, &data_dir);
@@ -343,7 +343,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![load_csv, preview, generate, save])
+        .invoke_handler(tauri::generate_handler![load_csv, preview, generate])
         .setup(setup)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,10 +18,23 @@ import { CircleAlertIcon } from "lucide-react"
 import { FileInput } from "@/components/file-input"
 import { toast } from "sonner"
 import { Presets } from "@/components/presets"
+import { Compact as ColorPicker, hexToRgba } from "@uiw/react-color"
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 export function App() {
   const [csvPath, setCsvPath] = useState<string>()
   const [imagePaths, setImagePaths] = useState<string[]>([])
+  const [textColor, setTextColor] = useState("#fcdc00")
+  const [rotation, setRotation] = useState(0)
+
   const [wantColumns, setWantColumns] = useState<number[]>([])
 
   const [imageSrc, setImageSrc] = useState<string | null>()
@@ -91,13 +104,20 @@ export function App() {
   }
 
   async function onPreview() {
+    console.log({ csvPath, imagePath: imagePaths[0], wantColumns, textColor, rotation })
+
     if (!validate()) return
-    console.log({ csvPath, imagePath: imagePaths[0], wantColumns })
 
     setImageSrc(undefined)
+
+    const { r, g, b } = hexToRgba(textColor)
     await preview.send({
       imagePath: imagePaths[0],
-      columns: wantColumns,
+      options: {
+        columns: wantColumns,
+        textColor: [r, g, b],
+        rotation,
+      },
     })
   }
 
@@ -115,9 +135,15 @@ export function App() {
     onProgress.current = new Channel()
     onProgress.current.onmessage = (n) => setProgress(n)
 
+    const { r, g, b } = hexToRgba(textColor)
+
     await generate.send({
       imagePaths,
-      columns: wantColumns,
+      options: {
+        columns: wantColumns,
+        textColor: [r, g, b],
+        rotation,
+      },
       outDir,
       onProgress: onProgress.current,
     })
@@ -143,6 +169,50 @@ export function App() {
               </Field>
             </FieldGroup>
 
+            <FieldGroup className="grid grid-cols-2">
+              <Field>
+                <FieldLabel>Text color</FieldLabel>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button style={{ backgroundColor: textColor }}>
+                      {textColor.toUpperCase()}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="p-0 w-auto">
+                    <ColorPicker color={textColor} onChange={(color) => setTextColor(color.hex)} />
+                  </PopoverContent>
+                </Popover>
+              </Field>
+              <Field>
+                <FieldLabel>Rotation</FieldLabel>
+                <Select value={rotation.toString()} onValueChange={(v) => setRotation(parseInt(v))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a fruit" />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    <SelectGroup>
+                      {["0", "90", "180", "270"].map((value, index) => (
+                        <SelectItem key={value} value={index.toString()}>
+                          {value}°
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                {/* <RadioGroup className="grid-cols-2"> */}
+                {/*   {["0", "90", "180", "270"].map((value) => { */}
+                {/*     const id = `rotation-${value}` */}
+                {/*     return ( */}
+                {/*       <div className="flex items-center gap-3"> */}
+                {/*         <RadioGroupItem id={id} value={value} /> */}
+                {/*         <Label htmlFor={id}>{value}°</Label> */}
+                {/*       </div> */}
+                {/*     ) */}
+                {/*   })} */}
+                {/* </RadioGroup> */}
+              </Field>
+            </FieldGroup>
+
             {loadCsv.data && (
               <>
                 <Separator />
@@ -163,11 +233,9 @@ export function App() {
                           <Checkbox
                             checked={wantColumns.includes(i)}
                             onCheckedChange={(v) => {
-                              if (v) {
-                                setWantColumns((prev) => [...prev, i])
-                              } else {
-                                setWantColumns((prev) => prev.filter((n) => n !== i))
-                              }
+                              v
+                                ? setWantColumns((prev) => [...prev, i])
+                                : setWantColumns((prev) => prev.filter((n) => n !== i))
                             }}
                           />
                           <Label>{header}</Label>
