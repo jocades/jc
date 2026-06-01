@@ -6,7 +6,7 @@ import { appDataDir, basename, join } from "@tauri-apps/api/path"
 import { load } from "@tauri-apps/plugin-store"
 
 import { Input } from "./components/ui/input"
-import { Field, FieldGroup, FieldLabel } from "./components/ui/field"
+import { Field, FieldError, FieldGroup, FieldLabel } from "./components/ui/field"
 import { Card, CardContent, CardFooter } from "./components/ui/card"
 import { Button } from "./components/ui/button"
 import { ButtonGroup } from "./components/ui/button-group"
@@ -21,9 +21,28 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox"
-import { CircleAlertIcon, PlusIcon, SaveIcon, TrashIcon, X } from "lucide-react"
+import {
+  CheckIcon,
+  CircleAlertIcon,
+  EraserIcon,
+  PlusIcon,
+  SaveIcon,
+  TrashIcon,
+  WaypointsIcon,
+  X,
+} from "lucide-react"
 import { Separator } from "./components/ui/separator"
 import { Progress } from "./components/ui/progress"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 
 export function TailwindIndicator() {
   return (
@@ -109,11 +128,19 @@ function useIPC<T>(
 const store = await load(await join(await appDataDir(), "presets.json"))
 
 interface Preset {
-  headers: number[]
+  columns: number[]
 }
 
-function usePresets() {
-  const [presets, setPresets] = useState<[key: string, val: Preset][]>([])
+function Presets(props: {
+  wantColumns: number[]
+  onApply?: (cols: number[]) => void
+  onClear?: () => void
+}) {
+  const [presets, setPresets] = useState<[string, Preset][]>([])
+  const [selected, setSelected] = useState<[string, Preset] | null>(null)
+
+  const [addOpen, setAddOpen] = useState(false)
+  const [addName, setAddName] = useState("")
 
   async function load() {
     const data = await store.entries<Preset>()
@@ -124,81 +151,135 @@ function usePresets() {
     load()
   }, [])
 
-  return {
-    presets,
+  async function upsert(name: string, columns: number[], exists: boolean) {
+    const item: [string, Preset] = [name, { columns }]
+    await store.set(item[0], item[1])
+
+    if (exists) {
+      setPresets((prev) => prev.map((p) => (p[0] === name ? item : p)))
+    } else {
+      setPresets((prev) => [...prev, item])
+    }
+
+    setSelected(item)
+    setAddOpen(false)
+    setAddName("")
   }
-}
 
-interface Item {
-  name: string
-  creatable?: string
-}
+  async function onAddSubmit() {
+    const name = addName.trim().toLowerCase()
+    if (!name) return
 
-const initItems: Item[] = [{ name: "platoon" }, { name: "bellamente" }, { name: "swan" }]
+    if (!presets.some((p) => p[0] === name)) {
+      await upsert(name, props.wantColumns, false)
+      return
+    }
 
-function Presets() {
-  const [items, setItems] = useState(initItems)
-  // const [selected, setSelected] = useState<string>()
-  const [query, setQuery] = useState("")
+    if (await dialog.confirm(`Preset '${name}' already exists. Replace?`)) {
+      await upsert(name, props.wantColumns, true)
+    }
+  }
 
   return (
-    <Combobox<Item>
-      items={items}
-      itemToStringLabel={(item) => item.name}
-      onValueChange={(item) => {
-        console.log(item)
-      }}
-      // inputValue={query}
-      // onInputValueChange={setQuery}
-    >
-      <div className="flex justify-between">
-        <ComboboxInput placeholder="Select a preset" />
-        {/* <Button variant="destructive" disabled={!selected}> */}
-        {/*   <TrashIcon /> */}
-        {/* </Button> */}
-      </div>
-      <ComboboxContent>
-        <ComboboxEmpty>No items found.</ComboboxEmpty>
-        <ComboboxList>
-          {(item: Item) => (
-            <ComboboxItem key={item.name} value={item}>
-              {item.name}
-            </ComboboxItem>
-          )}
-        </ComboboxList>
-      </ComboboxContent>
-    </Combobox>
-  )
-}
+    <div className="flex justify-between">
+      <div className="flex gap-x-4">
+        <Combobox<[string, Preset]>
+          items={presets}
+          value={selected}
+          onValueChange={setSelected}
+          itemToStringLabel={(item) => item[0]}
+        >
+          <div className="flex justify-between">
+            <ComboboxInput placeholder="Select a preset" showClear />
+          </div>
+          <ComboboxContent>
+            <ComboboxEmpty>No items found.</ComboboxEmpty>
+            <ComboboxList>
+              {(item) => (
+                <ComboboxItem key={item[0]} value={item}>
+                  {item[0]}
+                </ComboboxItem>
+              )}
+            </ComboboxList>
+          </ComboboxContent>
+        </Combobox>
 
-const frameworks = ["Next.js", "SvelteKit", "Nuxt.js", "Remix", "Astro"] as const
+        <div className="flex gap-x-1">
+          <Dialog open={addOpen} onOpenChange={setAddOpen} modal={true}>
+            <DialogTrigger asChild>
+              <Button variant="outline" disabled={props.wantColumns.length === 0}>
+                <PlusIcon />
+              </Button>
+            </DialogTrigger>
 
-export function ComboboxBasic() {
-  return (
-    <Combobox items={frameworks} onInputValueChange={(e) => console.log(e)}>
-      <ComboboxInput placeholder="Select a framework" />
-      <ComboboxContent>
-        <ComboboxEmpty>No items found.</ComboboxEmpty>
-        <ComboboxList>
-          {(item) => (
-            <ComboboxItem key={item} value={item}>
-              {item}
-              <TrashIcon
-                className="border rounded"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  console.log("click")
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>New preset</DialogTitle>
+                <DialogDescription>
+                  Create a preset for the current columns selected.
+                </DialogDescription>
+              </DialogHeader>
+              <form
+                className="flex flex-col gap-y-6"
+                onSubmit={async (e) => {
+                  e.preventDefault()
+                  await onAddSubmit()
                 }}
-              />
-            </ComboboxItem>
-          )}
-        </ComboboxList>
-      </ComboboxContent>
-    </Combobox>
+              >
+                <Field orientation="horizontal">
+                  <FieldLabel>Name</FieldLabel>
+                  <Input value={addName} onChange={(e) => setAddName(e.target.value)} />
+                </Field>
+                <DialogFooter>
+                  <DialogClose asChild>
+                    <Button variant="outline">Cancel</Button>
+                  </DialogClose>
+                  <Button type="submit">Create</Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <Button
+            variant="destructive"
+            disabled={!selected}
+            onClick={async () => {
+              if (!selected) return
+              const name = selected[0]
+              if (await dialog.confirm(`Remove '${name}' preset?`)) {
+                await store.delete(selected[0])
+                setPresets((prev) => prev.filter((p) => p[0] !== name))
+                setSelected(null)
+              }
+            }}
+          >
+            <TrashIcon />
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex gap-x-1">
+        <Button
+          variant="secondary"
+          disabled={!selected}
+          onClick={() => {
+            if (!selected) return
+            props.onApply?.(selected[1].columns)
+          }}
+        >
+          <CheckIcon />
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={props.wantColumns.length === 0}
+          onClick={props.onClear}
+        >
+          <EraserIcon />
+        </Button>
+      </div>
+    </div>
   )
 }
-
-// const onProgress = new Channel<number>()
 
 export function App() {
   const [csvPath, setCsvPath] = useState<string>()
@@ -276,68 +357,45 @@ export function App() {
 
   return (
     <main className="relative h-screen flex flex-col items-center">
-      <div className="container grid grid-cols-1 lg:grid-cols-2 pt-8 gap-4">
+      <div className="container pt-8 max-w-4xl">
         <Card className="flex flex-col">
           <CardContent className="flex flex-col gap-y-8">
-            {/* <ComboboxBasic /> */}
-
-            <Button
-              onClick={async () => {
-                const paths = await dialog.open({ multiple: true })
-                console.log(paths)
-              }}
-            >
-              Batch
-            </Button>
-
-            {/* <FieldGroup className="grid grid-cols-2"> */}
-            <Field>
-              <FieldLabel>CSV</FieldLabel>
-              <FileInput onChange={onCsvPath} />
-            </Field>
-
-            <Field>
-              <FieldLabel>Images</FieldLabel>
-              <FileInput
-                multiple={true}
-                onChange={onImagePaths}
-                filters={[{ name: "images", extensions: ["jpg", "jpeg", "png", "webp"] }]}
-              />
-            </Field>
-            {/* </FieldGroup> */}
-
-            {/* <FieldGroup className="grid grid-cols-2"> */}
-            {/*   <Field> */}
-            {/*     <FieldLabel>Time</FieldLabel> */}
-            {/*     <Input */}
-            {/*       type="time" */}
-            {/*       step={1} */}
-            {/*       value={time} */}
-            {/*       onChange={(e) => { */}
-            {/*         setTime(e.target.value) */}
-            {/*         setTimeTouched(true) */}
-            {/*       }} */}
-            {/*     /> */}
-            {/*   </Field> */}
-            {/* </FieldGroup> */}
-
-            <Separator />
-
-            <Field>
-              <FieldLabel>Preset</FieldLabel>
-              <Presets />
-            </Field>
+            <FieldGroup className="grid grid-cols-2">
+              <Field>
+                <FieldLabel>CSV</FieldLabel>
+                <FileInput onChange={onCsvPath} />
+              </Field>
+              <Field>
+                <FieldLabel>Images</FieldLabel>
+                <FileInput
+                  multiple={true}
+                  onChange={onImagePaths}
+                  filters={[{ name: "images", extensions: ["jpg", "jpeg", "png", "webp"] }]}
+                />
+              </Field>
+            </FieldGroup>
 
             {loadCsv.data && (
               <>
                 <Separator />
+
+                <Field>
+                  <FieldLabel>Preset</FieldLabel>
+                  <Presets
+                    wantColumns={wantColumns}
+                    onApply={(cols) => setWantColumns(cols)}
+                    onClear={() => setWantColumns([])}
+                  />
+                </Field>
+
                 <FieldGroup>
                   <Field>
                     <FieldLabel className="justify-between">Columns</FieldLabel>
-                    <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(100px,1fr))] max-h-64 overflow-auto">
+                    <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] max-h-80 overflow-auto">
                       {loadCsv.data.map((header, i) => (
                         <Field key={header} orientation="horizontal">
                           <Checkbox
+                            checked={wantColumns.includes(i)}
                             onCheckedChange={(v) => {
                               if (v) {
                                 setWantColumns((prev) => [...prev, i])
@@ -397,15 +455,15 @@ export function App() {
             </div>
           </CardFooter>
         </Card>
-        <Card className="items-center justify-center py-0">
-          {generate.isLoading ? (
-            <Spinner className="size-6 text-muted-foreground" />
-          ) : imageSrc ? (
-            <img className="object-contain w-full h-full" src={imageSrc} />
-          ) : (
-            <div className="text-muted-foreground">Image preview</div>
-          )}
-        </Card>
+        {/* <Card className="items-center justify-center py-0"> */}
+        {/*   {generate.isLoading ? ( */}
+        {/*     <Spinner className="size-6 text-muted-foreground" /> */}
+        {/*   ) : imageSrc ? ( */}
+        {/*     <img className="object-contain w-full h-full" src={imageSrc} /> */}
+        {/*   ) : ( */}
+        {/*     <div className="text-muted-foreground">Image preview</div> */}
+        {/*   )} */}
+        {/* </Card> */}
       </div>
       <TailwindIndicator />
     </main>
