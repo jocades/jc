@@ -14,10 +14,12 @@ use imageproc::drawing::draw_text_mut;
 mod worker {
     use super::*;
     use anyhow::{ensure, Context, Result};
+    use image::{GenericImage, ImageBuffer};
+    use imageproc::drawing::Canvas;
 
-    #[derive(Debug)]
     pub enum Event {
         Csv(PathBuf, oneshot::Sender<Result<Vec<String>>>),
+        Preview(PathBuf, Vec<usize>, oneshot::Sender<Result<PathBuf>>),
         Generate(Vec<PathBuf>, Vec<usize>, oneshot::Sender<Result<()>>),
         Save(PathBuf, oneshot::Sender<Result<()>>),
     }
@@ -63,6 +65,9 @@ mod worker {
                         trace!(?csv_path, "Event::Csv");
                         _ = resp.send(self.load_csv(csv_path));
                     }
+                    Event::Preview(image_path, columns, resp) => {
+                        _ = resp.send(self.preview(image_path, columns));
+                    }
                     Event::Generate(image_paths, columns, resp) => {
                         trace!(?image_paths, ?columns, "Event::Generate");
                         _ = resp.send(self.generate(image_paths, columns));
@@ -106,6 +111,20 @@ mod worker {
             });
 
             Ok(headers)
+        }
+
+        fn preview(&self, image_path: PathBuf, columns: Vec<usize>) -> Result<PathBuf> {
+            let csv = self.csv.as_ref().context("Load a CSV before previewing")?;
+            ensure!(!columns.is_empty(), "Column indices are empty");
+
+            let image = render(&image_path, csv, &columns, &self.font)?;
+
+            fs::create_dir_all(&self.gen_dir)?;
+            let out_path = self.gen_dir.join("preview.png");
+
+            image.save(&out_path)?;
+
+            Ok(out_path)
         }
 
         fn generate(&self, image_paths: Vec<PathBuf>, columns: Vec<usize>) -> Result<()> {
@@ -187,6 +206,71 @@ mod worker {
             Ok(())
         }
     }
+
+    fn parse_path_name(path: &Path) -> Result<(&str, &str, &str)> {
+        let name = path
+            .file_stem()
+            .context("Unable to get file name")?
+            .to_str()
+            .context("Failed to convert file name to string")?;
+
+        let mut parts = name.split("%");
+
+        let session = parts.next().context("No session")?;
+        let date = parts.next().context("No date")?;
+        let time = parts.next().context("No time")?;
+
+        Ok((session, date, time))
+    }
+
+    fn render(
+        image_path: &Path,
+        csv: &LoadedCsv,
+        columns: &[usize],
+        font: &FontArc,
+    ) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+        let (_, _, time) = parse_path_name(&image_path).context("Parse file name")?;
+
+        let record_index = csv
+            .records_by_time
+            .get(time)
+            .copied()
+            .with_context(|| format!("No record found with time: {time}"))?;
+
+        let record = &csv.records[record_index];
+
+        let mut image = image::open(&image_path)?.to_rgba8();
+        annotate(&mut image, csv, columns, record, font);
+
+        Ok(image)
+    }
+
+    fn annotate(
+        image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+        csv: &LoadedCsv,
+        columns: &[usize],
+        record: &csv::StringRecord,
+        font: &FontArc,
+    ) {
+        let scale = PxScale::from(92.0);
+        let color = Rgba([0, 255, 0, 255]);
+        let offset = 92;
+
+        for (i, &col) in columns.iter().enumerate() {
+            let k = csv.headers[col].trim();
+            let v = record[col].trim();
+            let text = format!("{k}: {v}");
+            draw_text_mut(
+                image,
+                color,
+                offset,
+                offset * (i as i32 + 1),
+                scale,
+                font,
+                &text,
+            );
+        }
+    }
 }
 
 use worker::Event;
@@ -195,6 +279,21 @@ use worker::Event;
 async fn load_csv(path: PathBuf, state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let (tx, rx) = oneshot::channel();
     state.worker_tx.send(Event::Csv(path, tx)).await.unwrap();
+    rx.await.unwrap().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn preview(
+    image_path: PathBuf,
+    columns: Vec<usize>,
+    state: State<'_, AppState>,
+) -> Result<PathBuf, String> {
+    let (tx, rx) = oneshot::channel();
+    state
+        .worker_tx
+        .send(Event::Preview(image_path, columns, tx))
+        .await
+        .unwrap();
     rx.await.unwrap().map_err(|e| e.to_string())
 }
 
@@ -278,7 +377,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![load_csv, generate, save])
+        .invoke_handler(tauri::generate_handler![load_csv, preview, generate, save])
         .setup(setup)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

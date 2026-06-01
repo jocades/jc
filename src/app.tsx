@@ -186,7 +186,10 @@ function Presets(props: {
         <Combobox<[string, Preset]>
           items={presets}
           value={selected}
-          onValueChange={setSelected}
+          onValueChange={(v) => {
+            console.log("onValueChange", v)
+            setSelected(v)
+          }}
           itemToStringLabel={(item) => item[0]}
         >
           <div className="flex justify-between">
@@ -242,7 +245,7 @@ function Presets(props: {
 
           <Button
             variant="destructive"
-            disabled={!selected}
+            disabled={!selected || !selected[0]}
             onClick={async () => {
               if (!selected) return
               const name = selected[0]
@@ -261,7 +264,7 @@ function Presets(props: {
       <div className="flex gap-x-1">
         <Button
           variant="secondary"
-          disabled={!selected}
+          disabled={!selected || !selected[0]}
           onClick={() => {
             if (!selected) return
             props.onApply?.(selected[1].columns)
@@ -298,9 +301,14 @@ export function App() {
     onError: (e) => setError(e),
   })
 
-  const generate = useIPC<string>("generate", {
+  const preview = useIPC<string>("preview", {
     onSend: () => setError(null),
-    onSuccess: () => {},
+    onSuccess: (path) => setImageSrc(convertFileSrc(path)),
+    onError: (e) => setError(e),
+  })
+
+  const generate = useIPC("generate", {
+    onSend: () => setError(null),
     onError: (e) => setError(e),
     onEnd: () => {
       setProgress(0)
@@ -338,8 +346,11 @@ export function App() {
     return true
   }
 
-  function onPreview() {
+  async function onPreview() {
     if (!validate()) return
+
+    const columns = wantColumns.sort((a, b) => a - b)
+    await preview.send({ imagePath: imagePaths[0], columns })
   }
 
   async function onGenerate() {
@@ -357,7 +368,7 @@ export function App() {
 
   return (
     <main className="relative h-screen flex flex-col items-center">
-      <div className="container pt-8 max-w-4xl">
+      <div className="container py-8 max-w-4xl">
         <Card className="flex flex-col">
           <CardContent className="flex flex-col gap-y-8">
             <FieldGroup className="grid grid-cols-2">
@@ -424,6 +435,10 @@ export function App() {
           </CardContent>
 
           <CardFooter className="gap-x-4">
+            <Button onClick={onPreview} disabled={preview.isLoading}>
+              {preview.isLoading && <Spinner />}
+              Preview
+            </Button>
             <Button onClick={onGenerate} disabled={generate.isLoading}>
               {generate.isLoading && <Spinner />}
               Generate
@@ -437,6 +452,7 @@ export function App() {
                 <Progress value={(progress / 5) * 100} />
               </Field>
             )}
+
             <div className="flex justify-between">
               {/* <Button */}
               {/*   disabled={!imageSrc} */}
@@ -455,6 +471,9 @@ export function App() {
             </div>
           </CardFooter>
         </Card>
+
+        {imageSrc && <img src={imageSrc} className="pt-4" />}
+
         {/* <Card className="items-center justify-center py-0"> */}
         {/*   {generate.isLoading ? ( */}
         {/*     <Spinner className="size-6 text-muted-foreground" /> */}
