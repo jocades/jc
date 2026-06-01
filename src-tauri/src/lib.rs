@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use tauri::{async_runtime::spawn_blocking, Manager, State};
+use tauri::{Manager, State};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, trace};
 
@@ -13,14 +13,19 @@ use imageproc::drawing::draw_text_mut;
 
 mod worker {
     use super::*;
-    use anyhow::{ensure, Context, Result};
-    use image::{GenericImage, ImageBuffer};
-    use imageproc::drawing::Canvas;
+    use anyhow::{Context, Result};
+    use image::ImageBuffer;
 
     pub enum Event {
         Csv(PathBuf, oneshot::Sender<Result<Vec<String>>>),
         Preview(PathBuf, Vec<usize>, oneshot::Sender<Result<PathBuf>>),
-        Generate(Vec<PathBuf>, Vec<usize>, oneshot::Sender<Result<()>>),
+        Generate(
+            Vec<PathBuf>,
+            Vec<usize>,
+            PathBuf,
+            tauri::ipc::Channel<usize>,
+            oneshot::Sender<Result<PathBuf>>,
+        ),
         Save(PathBuf, oneshot::Sender<Result<()>>),
     }
 
@@ -61,20 +66,26 @@ mod worker {
         fn run(&mut self) -> Result<()> {
             while let Some(event) = self.rx.blocking_recv() {
                 match event {
-                    Event::Csv(csv_path, resp) => {
+                    Event::Csv(csv_path, res) => {
                         trace!(?csv_path, "Event::Csv");
-                        _ = resp.send(self.load_csv(csv_path));
+                        _ = res.send(self.load_csv(csv_path));
                     }
                     Event::Preview(image_path, columns, resp) => {
+                        trace!(?image_path, ?columns, "Event::Preview");
                         _ = resp.send(self.preview(image_path, columns));
                     }
-                    Event::Generate(image_paths, columns, resp) => {
-                        trace!(?image_paths, ?columns, "Event::Generate");
-                        _ = resp.send(self.generate(image_paths, columns));
+                    Event::Generate(image_paths, columns, out_dir, on_progress, res) => {
+                        trace!(
+                            count = image_paths.len(),
+                            ?columns,
+                            ?out_dir,
+                            "Event::Generate"
+                        );
+                        _ = res.send(self.generate(image_paths, columns, out_dir, on_progress));
                     }
-                    Event::Save(dest, resp) => {
+                    Event::Save(dest, res) => {
                         trace!(?dest, "Event::Save");
-                        _ = resp.send(self.save(dest));
+                        _ = res.send(self.save(dest));
                     }
                 }
             }
@@ -113,9 +124,9 @@ mod worker {
             Ok(headers)
         }
 
-        fn preview(&self, image_path: PathBuf, columns: Vec<usize>) -> Result<PathBuf> {
+        fn preview(&self, image_path: PathBuf, mut columns: Vec<usize>) -> Result<PathBuf> {
             let csv = self.csv.as_ref().context("Load a CSV before previewing")?;
-            ensure!(!columns.is_empty(), "Column indices are empty");
+            columns.sort();
 
             let image = render(&image_path, csv, &columns, &self.font)?;
 
@@ -123,81 +134,38 @@ mod worker {
             let out_path = self.gen_dir.join("preview.png");
 
             image.save(&out_path)?;
+            trace!(?out_path, "preview");
 
             Ok(out_path)
         }
 
-        fn generate(&self, image_paths: Vec<PathBuf>, columns: Vec<usize>) -> Result<()> {
-            // ensure!(!indices.is_empty(), "Header indices are empty");
-
+        fn generate(
+            &self,
+            image_paths: Vec<PathBuf>,
+            mut columns: Vec<usize>,
+            out_dir: PathBuf,
+            on_progress: tauri::ipc::Channel<usize>,
+        ) -> Result<PathBuf> {
             let csv = self.csv.as_ref().context("Load a CSV before generating")?;
+            columns.sort();
 
-            Ok(())
+            for (i, path) in image_paths.iter().enumerate() {
+                let file_stem = path
+                    .file_stem()
+                    .context("failed to get file stem")?
+                    .to_str()
+                    .context("failed to convert stem to string")?;
+                let file_name = format!("{file_stem}.annotated.png");
+                let out_path = out_dir.join(file_name);
 
-            // let record = match &time {
-            //     Some(stamp) => {
-            //         let time_index = csv
-            //             .headers
-            //             .iter()
-            //             .position(|header| header == "time")
-            //             .context("CSV missing a time column")?;
-            //
-            //         csv.records
-            //             .iter()
-            //             .find(|r| r.get(time_index) == Some(stamp))
-            //             .with_context(|| format!("No record found with time: {stamp}"))?
-            //     }
-            //     None => csv
-            //         .records
-            //         .first()
-            //         .context("CSV does not contain any records")?,
-            // };
-            //
-            // let mut img = image::open(&img_path)?.to_rgba8();
-            // let scale = PxScale::from(92.0);
-            // let color = Rgba([255, 255, 0, 255]);
-            // let offset = 92;
-            //
-            // for (i, &col) in indices.iter().enumerate() {
-            //     let header = csv
-            //         .headers
-            //         .get(col)
-            //         .with_context(|| format!("Missing header for column: {col}"))?
-            //         .trim();
-            //
-            //     let value = record
-            //         .get(col)
-            //         .with_context(|| format!("Missing value for column: {col}"))?
-            //         .trim();
-            //
-            //     let text = format!("{header}: {value}");
-            //
-            //     draw_text_mut(
-            //         &mut img,
-            //         color,
-            //         offset,
-            //         offset * (i as i32 + 1),
-            //         scale,
-            //         &self.font,
-            //         &text,
-            //     );
-            // }
-            //
-            // fs::create_dir_all(&self.gen_dir)?;
-            //
-            // let out_path = self.gen_dir.join("out.png");
-            // img.save(&out_path)?;
-            // trace!(?out_path, "generated");
-            //
-            // Ok(out_path)
-        }
+                let image = render(&path, csv, &columns, &self.font)?;
+                image.save(&out_path)?;
+                trace!(?out_path, "generated");
 
-        fn generate_batch(&self, image_paths: Vec<PathBuf>, columns: Vec<usize>) -> Result<()> {
-            ensure!(!columns.is_empty(), "Columns are empty");
+                on_progress.send(i + 1).unwrap()
+            }
 
-            let csv = self.csv.as_ref().context("Load a CSV before generating")?;
-
-            Ok(())
+            Ok(out_dir)
         }
 
         fn save(&self, dest: PathBuf) -> Result<()> {
@@ -208,13 +176,13 @@ mod worker {
     }
 
     fn parse_path_name(path: &Path) -> Result<(&str, &str, &str)> {
-        let name = path
+        let stem = path
             .file_stem()
-            .context("Unable to get file name")?
+            .context("failed to get file stem")?
             .to_str()
-            .context("Failed to convert file name to string")?;
+            .context("failed to convert stem to string")?;
 
-        let mut parts = name.split("%");
+        let mut parts = stem.split("%");
 
         let session = parts.next().context("No session")?;
         let date = parts.next().context("No date")?;
@@ -229,7 +197,7 @@ mod worker {
         columns: &[usize],
         font: &FontArc,
     ) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-        let (_, _, time) = parse_path_name(&image_path).context("Parse file name")?;
+        let (_, _, time) = parse_path_name(&image_path).context("Failed to parse file name")?;
 
         let record_index = csv
             .records_by_time
@@ -238,20 +206,7 @@ mod worker {
             .with_context(|| format!("No record found with time: {time}"))?;
 
         let record = &csv.records[record_index];
-
         let mut image = image::open(&image_path)?.to_rgba8();
-        annotate(&mut image, csv, columns, record, font);
-
-        Ok(image)
-    }
-
-    fn annotate(
-        image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-        csv: &LoadedCsv,
-        columns: &[usize],
-        record: &csv::StringRecord,
-        font: &FontArc,
-    ) {
         let scale = PxScale::from(92.0);
         let color = Rgba([0, 255, 0, 255]);
         let offset = 92;
@@ -261,7 +216,7 @@ mod worker {
             let v = record[col].trim();
             let text = format!("{k}: {v}");
             draw_text_mut(
-                image,
+                &mut image,
                 color,
                 offset,
                 offset * (i as i32 + 1),
@@ -270,16 +225,27 @@ mod worker {
                 &text,
             );
         }
+
+        Ok(image)
     }
 }
 
 use worker::Event;
 
+#[derive(serde::Serialize)]
+struct Error(String);
+
+impl From<anyhow::Error> for Error {
+    fn from(error: anyhow::Error) -> Self {
+        Self(format!("{error:#}"))
+    }
+}
+
 #[tauri::command]
-async fn load_csv(path: PathBuf, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+async fn load_csv(path: PathBuf, state: State<'_, AppState>) -> Result<Vec<String>, Error> {
     let (tx, rx) = oneshot::channel();
     state.worker_tx.send(Event::Csv(path, tx)).await.unwrap();
-    rx.await.unwrap().map_err(|e| e.to_string())
+    Ok(rx.await.unwrap()?)
 }
 
 #[tauri::command]
@@ -287,37 +253,37 @@ async fn preview(
     image_path: PathBuf,
     columns: Vec<usize>,
     state: State<'_, AppState>,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, Error> {
     let (tx, rx) = oneshot::channel();
     state
         .worker_tx
         .send(Event::Preview(image_path, columns, tx))
         .await
         .unwrap();
-    rx.await.unwrap().map_err(|e| e.to_string())
+    Ok(rx.await.unwrap()?)
 }
 
 #[tauri::command]
 async fn generate(
     image_paths: Vec<PathBuf>,
     columns: Vec<usize>,
+    out_dir: PathBuf,
     on_progress: tauri::ipc::Channel<usize>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    trace!("sleeping for 5s");
-    for i in 1..=5 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        on_progress.send(i).unwrap()
-    }
-    trace!("done");
-    Ok(())
-    // let (tx, rx) = oneshot::channel();
-    // state
-    //     .worker_tx
-    //     .send(Event::Generate(image_paths, columns, tx))
-    //     .await
-    //     .unwrap();
-    // rx.await.unwrap().map_err(|e| e.to_string())
+) -> Result<PathBuf, Error> {
+    let (tx, rx) = oneshot::channel();
+    state
+        .worker_tx
+        .send(Event::Generate(
+            image_paths,
+            columns,
+            out_dir,
+            on_progress,
+            tx,
+        ))
+        .await
+        .unwrap();
+    Ok(rx.await.unwrap()?)
 }
 
 #[tauri::command]

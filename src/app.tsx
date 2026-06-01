@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from "react"
-
 import * as dialog from "@tauri-apps/plugin-dialog"
 import { Channel, convertFileSrc, invoke, InvokeArgs } from "@tauri-apps/api/core"
 import { appDataDir, basename, join } from "@tauri-apps/api/path"
+import { openPath } from "@tauri-apps/plugin-opener"
 import { load } from "@tauri-apps/plugin-store"
 
-import { Input } from "./components/ui/input"
-import { Field, FieldError, FieldGroup, FieldLabel } from "./components/ui/field"
-import { Card, CardContent, CardFooter } from "./components/ui/card"
+import { useEffect, useRef, useState } from "react"
+
 import { Button } from "./components/ui/button"
+import { Input } from "./components/ui/input"
+import { Field, FieldGroup, FieldLabel } from "./components/ui/field"
+import { Card, CardContent, CardFooter } from "./components/ui/card"
 import { ButtonGroup } from "./components/ui/button-group"
 import { Checkbox } from "./components/ui/checkbox"
 import { Label } from "./components/ui/label"
@@ -21,16 +22,6 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox"
-import {
-  CheckIcon,
-  CircleAlertIcon,
-  EraserIcon,
-  PlusIcon,
-  SaveIcon,
-  TrashIcon,
-  WaypointsIcon,
-  X,
-} from "lucide-react"
 import { Separator } from "./components/ui/separator"
 import { Progress } from "./components/ui/progress"
 import {
@@ -43,6 +34,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { CheckIcon, CircleAlertIcon, EraserIcon, PlusIcon, TrashIcon } from "lucide-react"
+import { Toaster } from "./components/ui/sonner"
+import { toast } from "sonner"
 
 export function TailwindIndicator() {
   return (
@@ -289,7 +283,7 @@ export function App() {
   const [imagePaths, setImagePaths] = useState<string[]>([])
   const [wantColumns, setWantColumns] = useState<number[]>([])
 
-  const [imageSrc, setImageSrc] = useState<string>()
+  const [imageSrc, setImageSrc] = useState<string | null>()
   const [error, setError] = useState<string | null>()
 
   const onProgress = useRef<Channel<number>>(null)
@@ -302,22 +296,29 @@ export function App() {
   })
 
   const preview = useIPC<string>("preview", {
-    onSend: () => setError(null),
-    onSuccess: (path) => setImageSrc(convertFileSrc(path)),
+    onSend: () => {
+      setError(null)
+      setImageSrc(null)
+    },
+    onSuccess: (path) => setImageSrc(convertFileSrc(path) + "?v=" + Date.now()),
     onError: (e) => setError(e),
   })
 
-  const generate = useIPC("generate", {
+  const generate = useIPC<string>("generate", {
     onSend: () => setError(null),
+    onSuccess: (outDir) => {
+      toast.info(`Generated ${imagePaths.length} images.`, {
+        action: {
+          label: "Open",
+          onClick: () => openPath(outDir),
+        },
+      })
+    },
     onError: (e) => setError(e),
     onEnd: () => {
       setProgress(0)
       onProgress.current = null
     },
-  })
-
-  const save = useIPC<string>("save", {
-    onError: (e) => setError(e),
   })
 
   async function onCsvPath(paths: string[]) {
@@ -348,9 +349,13 @@ export function App() {
 
   async function onPreview() {
     if (!validate()) return
+    console.log({ csvPath, imagePath: imagePaths[0], wantColumns })
 
-    const columns = wantColumns.sort((a, b) => a - b)
-    await preview.send({ imagePath: imagePaths[0], columns })
+    setImageSrc(undefined)
+    await preview.send({
+      imagePath: imagePaths[0],
+      columns: wantColumns,
+    })
   }
 
   async function onGenerate() {
@@ -358,18 +363,27 @@ export function App() {
 
     if (!validate()) return
 
-    const columns = wantColumns.sort((a, b) => a - b)
+    const outDir = await dialog.open({
+      directory: true,
+      canCreateDirectories: true,
+    })
+    if (!outDir) return
 
     onProgress.current = new Channel()
     onProgress.current.onmessage = (n) => setProgress(n)
 
-    await generate.send({ imagePaths, columns, onProgress: onProgress.current })
+    await generate.send({
+      imagePaths,
+      columns: wantColumns,
+      outDir,
+      onProgress: onProgress.current,
+    })
   }
 
   return (
     <main className="relative h-screen flex flex-col items-center">
       <div className="container py-8 max-w-4xl">
-        <Card className="flex flex-col">
+        <Card>
           <CardContent className="flex flex-col gap-y-8">
             <FieldGroup className="grid grid-cols-2">
               <Field>
@@ -430,7 +444,6 @@ export function App() {
                 <span>{error}</span>
               </div>
             )}
-
             <Separator />
           </CardContent>
 
@@ -447,44 +460,20 @@ export function App() {
               <Field>
                 <FieldLabel>
                   <span>Generating...</span>
-                  <span className="ml-auto">{progress} / 5</span>
+                  <span className="ml-auto">
+                    {progress} / {imagePaths.length}
+                  </span>
                 </FieldLabel>
-                <Progress value={(progress / 5) * 100} />
+                <Progress value={(progress / imagePaths.length) * 100} />
               </Field>
             )}
-
-            <div className="flex justify-between">
-              {/* <Button */}
-              {/*   disabled={!imageSrc} */}
-              {/*   onClick={async () => { */}
-              {/*     const dest = await dialog.save({ */}
-              {/*       canCreateDirectories: true, */}
-              {/*       filters: [{ name: "filter", extensions: ["png"] }], */}
-              {/*     }) */}
-              {/*     if (!dest) return */}
-              {/*     await save.send({ dest }) */}
-              {/*   }} */}
-              {/* > */}
-              {/*   <SaveIcon /> */}
-              {/*   Save */}
-              {/* </Button> */}
-            </div>
           </CardFooter>
         </Card>
 
         {imageSrc && <img src={imageSrc} className="pt-4" />}
-
-        {/* <Card className="items-center justify-center py-0"> */}
-        {/*   {generate.isLoading ? ( */}
-        {/*     <Spinner className="size-6 text-muted-foreground" /> */}
-        {/*   ) : imageSrc ? ( */}
-        {/*     <img className="object-contain w-full h-full" src={imageSrc} /> */}
-        {/*   ) : ( */}
-        {/*     <div className="text-muted-foreground">Image preview</div> */}
-        {/*   )} */}
-        {/* </Card> */}
       </div>
-      <TailwindIndicator />
+      {/* <TailwindIndicator /> */}
+      <Toaster />
     </main>
   )
 }
