@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { cn } from "./lib/utils"
 
 export function App() {
   const [csvPath, setCsvPath] = useState<string>()
@@ -52,10 +53,7 @@ export function App() {
   })
 
   const preview = useIPC<string>("preview", {
-    onSend: () => {
-      setError(null)
-      setImageSrc(null)
-    },
+    onSend: () => setError(null),
     onSuccess: (path) => setImageSrc(convertFileSrc(path) + "?v=" + Date.now()),
     onError,
   })
@@ -108,8 +106,6 @@ export function App() {
 
     if (!validate()) return
 
-    setImageSrc(undefined)
-
     const { r, g, b } = hexToRgba(textColor)
     await preview.send({
       imagePath: imagePaths[0],
@@ -151,10 +147,10 @@ export function App() {
 
   return (
     <Layout>
-      <div className="container py-8 max-w-4xl">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)] gap-4">
         <Card>
           <CardContent className="flex flex-col gap-y-8">
-            <FieldGroup className="grid grid-cols-2">
+            <FieldGroup className="grid sm:grid-cols-2 grid-cols-1">
               <Field>
                 <FieldLabel>CSV</FieldLabel>
                 <FileInput onChange={onCsvPath} />
@@ -199,53 +195,46 @@ export function App() {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-                {/* <RadioGroup className="grid-cols-2"> */}
-                {/*   {["0", "90", "180", "270"].map((value) => { */}
-                {/*     const id = `rotation-${value}` */}
-                {/*     return ( */}
-                {/*       <div className="flex items-center gap-3"> */}
-                {/*         <RadioGroupItem id={id} value={value} /> */}
-                {/*         <Label htmlFor={id}>{value}°</Label> */}
-                {/*       </div> */}
-                {/*     ) */}
-                {/*   })} */}
-                {/* </RadioGroup> */}
               </Field>
             </FieldGroup>
 
-            {loadCsv.data && (
-              <>
-                <Separator />
-                <Field>
-                  <FieldLabel>Preset</FieldLabel>
-                  <Presets
-                    wantColumns={wantColumns}
-                    onApply={(cols) => setWantColumns(cols)}
-                    onClear={() => setWantColumns([])}
-                  />
-                </Field>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel className="justify-between">Columns</FieldLabel>
-                    <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] max-h-80 overflow-auto">
-                      {loadCsv.data.map((header, i) => (
-                        <Field key={header} orientation="horizontal">
-                          <Checkbox
-                            checked={wantColumns.includes(i)}
-                            onCheckedChange={(v) => {
-                              v
-                                ? setWantColumns((prev) => [...prev, i])
-                                : setWantColumns((prev) => prev.filter((n) => n !== i))
-                            }}
-                          />
-                          <Label>{header}</Label>
-                        </Field>
-                      ))}
-                    </FieldGroup>
-                  </Field>
-                </FieldGroup>
-              </>
-            )}
+            <Separator />
+
+            <Field>
+              <FieldLabel>Preset</FieldLabel>
+              <Presets
+                wantColumns={wantColumns}
+                onApply={(cols) => setWantColumns(cols)}
+                onClear={() => setWantColumns([])}
+              />
+            </Field>
+
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Columns</FieldLabel>
+                {loadCsv.data ? (
+                  <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] max-h-72 overflow-auto bg-muted/50 p-2">
+                    {loadCsv.data.map((header, i) => (
+                      <Field key={header} orientation="horizontal">
+                        <Checkbox
+                          checked={wantColumns.includes(i)}
+                          onCheckedChange={(v) => {
+                            v
+                              ? setWantColumns((prev) => [...prev, i])
+                              : setWantColumns((prev) => prev.filter((n) => n !== i))
+                          }}
+                        />
+                        <Label>{header}</Label>
+                      </Field>
+                    ))}
+                  </FieldGroup>
+                ) : (
+                  <div className="bg-muted/50 p-2 rounded h-72 text-muted-foreground">
+                    Add a CSV to select columns.
+                  </div>
+                )}
+              </Field>
+            </FieldGroup>
 
             {error && (
               <div className="text-destructive flex items-center gap-x-2">
@@ -279,7 +268,21 @@ export function App() {
           </CardFooter>
         </Card>
 
-        {imageSrc && <img src={imageSrc} className="pt-4" />}
+        <div className="relative h-full min-h-[28rem] lg:min-h-[36rem] border flex items-center justify-center bg-muted/40 rounded">
+          {imageSrc ? (
+            <img src={imageSrc} className="max-h-[70vh] object-contain" />
+          ) : (
+            <p className="text-muted-foreground text-sm">Preview</p>
+          )}
+          <div
+            className={cn(
+              "absolute inset-0 flex items-center justify-center bg-muted/40 backdrop-blur-[1px] transition-opacity",
+              preview.isLoading ? "opacity-100" : "opacity-0 pointer-events-none",
+            )}
+          >
+            <Spinner className="size-6" />
+          </div>
+        </div>
       </div>
     </Layout>
   )
