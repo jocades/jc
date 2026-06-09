@@ -164,20 +164,21 @@ mod worker {
         }
     }
 
-    fn parse_path_name(path: &Path) -> Result<(&str, &str, &str)> {
+    fn parse_path_name(path: &Path) -> Result<(&str, &str, &str, &str)> {
         let stem = path
             .file_stem()
             .context("failed to get file stem")?
             .to_str()
             .context("failed to convert stem to string")?;
 
-        let mut parts = stem.split("%");
+        let mut parts = stem.split("_");
 
-        let session = parts.next().context("No session")?;
+        let boat = parts.next().context("No boat")?;
+        let sail = parts.next().context("No sail")?;
         let date = parts.next().context("No date")?;
         let time = parts.next().context("No time")?;
 
-        Ok((session, date, time))
+        Ok((boat, sail, date, time))
     }
 
     fn render(
@@ -186,11 +187,14 @@ mod worker {
         opts: &Options,
         font: &FontArc,
     ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
-        let (_, _, time) = parse_path_name(&image_path).context("Failed to parse file name")?;
+        let (_, _, _, time) = parse_path_name(&image_path).context("Failed to parse file name")?;
+        let time = time.replace("-", ":");
+
+        trace!(time, "render");
 
         let record_index = csv
             .records_by_time
-            .get(time)
+            .get(&time)
             .copied()
             .with_context(|| format!("No record found with time: {time}"))?;
 

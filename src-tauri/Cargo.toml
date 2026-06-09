@@ -27,7 +27,6 @@ image = "0.25.10"
 imageproc = "0.26.2"
 csv = "1.4.0"
 ab_glyph = "0.2.32"
-tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["sync", "time"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing = "0.1.44"
