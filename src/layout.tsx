@@ -1,20 +1,19 @@
-import { useState, useEffect } from "react"
+import { useEffect } from "react"
 import { Toaster } from "./components/ui/sonner"
 import { TwIndicator } from "./components/ui/tw-indicator"
 import { MoonIcon, SunIcon } from "lucide-react"
 import { Button } from "./components/ui/button"
+import { useLocalStorage } from "./hooks/use-local-storage"
 
 export function Layout(props: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState(localStorage.getItem("theme") ?? "light")
+  const [theme, setTheme] = useLocalStorage("theme", "light")
 
   useEffect(() => {
     document.documentElement.setAttribute("class", theme)
   }, [theme])
 
   function toggleTheme() {
-    const v = theme === "light" ? "dark" : "light"
-    localStorage.setItem("theme", v)
-    setTheme(v)
+    setTheme(theme === "light" ? "dark" : "light")
   }
 
   return (

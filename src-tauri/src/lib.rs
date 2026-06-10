@@ -187,7 +187,8 @@ mod worker {
         opts: &Options,
         font: &FontArc,
     ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
-        let (_, _, _, time) = parse_path_name(&image_path).context("Failed to parse file name")?;
+        let (boat, sail, date, time) =
+            parse_path_name(&image_path).context("Failed to parse file name")?;
         let time = time.replace("-", ":");
 
         trace!(time, "render");
@@ -215,6 +216,10 @@ mod worker {
         let color = Rgb(opts.text_color);
         let offset = 92;
 
+        let title = format!("{boat} / {sail}");
+
+        draw_text_mut(&mut image, color, offset, offset, scale, font, &title);
+
         for (i, &col) in opts.columns.iter().enumerate() {
             let key = csv
                 .headers
@@ -228,7 +233,7 @@ mod worker {
                 &mut image,
                 color,
                 offset,
-                offset * (i as i32 + 1),
+                offset * (i as i32 + 2),
                 scale,
                 font,
                 &text,

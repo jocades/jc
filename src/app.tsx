@@ -29,11 +29,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "./lib/utils"
+import { useLocalStorage } from "./hooks/use-local-storage"
 
 export function App() {
   const [csvPath, setCsvPath] = useState<string>()
   const [imagePaths, setImagePaths] = useState<string[]>([])
-  const [textColor, setTextColor] = useState("#fcdc00")
+  const [textColor, setTextColor] = useLocalStorage("textColor", "#fcdc00")
   const [rotation, setRotation] = useState(0)
 
   const [wantColumns, setWantColumns] = useState<number[]>([])
