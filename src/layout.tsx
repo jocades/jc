@@ -6,7 +6,7 @@ import { Button } from "./components/ui/button"
 import { useLocalStorage } from "./hooks/use-local-storage"
 
 export function Layout(props: { children: React.ReactNode }) {
-  const [theme, setTheme] = useLocalStorage("theme", "light")
+  const [theme, setTheme] = useLocalStorage("theme-v1", "light")
 
   useEffect(() => {
     document.documentElement.setAttribute("class", theme)
