@@ -30,6 +30,9 @@ import {
 } from "@/components/ui/select"
 import { cn } from "./lib/utils"
 import { useLocalStorage } from "./hooks/use-local-storage"
+import { DragDropProvider } from "@dnd-kit/react"
+import { useSortable } from "@dnd-kit/react/sortable"
+import { move } from "@dnd-kit/helpers"
 
 export function App() {
   const [csvPath, setCsvPath] = useState<string>()
@@ -214,20 +217,34 @@ export function App() {
               <Field>
                 <FieldLabel>Columns</FieldLabel>
                 {loadCsv.data ? (
-                  <FieldGroup className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] max-h-72 overflow-auto bg-muted/50 p-2">
-                    {loadCsv.data.map((header, i) => (
-                      <Field key={header} orientation="horizontal">
-                        <Checkbox
-                          checked={wantColumns.includes(i)}
-                          onCheckedChange={(v) => {
-                            v
-                              ? setWantColumns((prev) => [...prev, i])
-                              : setWantColumns((prev) => prev.filter((n) => n !== i))
-                          }}
-                        />
-                        <Label>{header}</Label>
-                      </Field>
-                    ))}
+                  <FieldGroup className="grid grid-cols-[minmax(50%,75%)_25%] max-h-72 bg-muted/50 p-1">
+                    <div className="grid grid-cols-2 overflow-auto gap-1">
+                      {loadCsv.data.map((header, i) => (
+                        <Field key={header} orientation="horizontal">
+                          <Checkbox
+                            checked={wantColumns.includes(i)}
+                            onCheckedChange={(v) => {
+                              v
+                                ? setWantColumns((prev) => [...prev, i])
+                                : setWantColumns((prev) => prev.filter((n) => n !== i))
+                            }}
+                          />
+                          <Label className="truncate">{header}</Label>
+                        </Field>
+                      ))}
+                    </div>
+                    <DragDropProvider onDragEnd={(ev) => setWantColumns((prev) => move(prev, ev))}>
+                      <ul className="flex flex-col overflow-auto gap-2 w-full">
+                        {wantColumns.map((colIndex, i) => (
+                          <Draggable
+                            key={colIndex}
+                            id={colIndex}
+                            index={i}
+                            text={loadCsv.data![colIndex]}
+                          />
+                        ))}
+                      </ul>
+                    </DragDropProvider>
                   </FieldGroup>
                 ) : (
                   <div className="bg-muted/50 p-2 rounded h-72 text-muted-foreground">
@@ -286,5 +303,14 @@ export function App() {
         </div>
       </div>
     </Layout>
+  )
+}
+
+function Draggable({ text, id, index }: { text: string; id: number; index: number }) {
+  const { ref } = useSortable({ id, index })
+  return (
+    <li ref={ref} className="border rounded px-2 py-1 cursor-grab select-none">
+      {text}
+    </li>
   )
 }

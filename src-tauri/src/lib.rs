@@ -119,10 +119,8 @@ mod worker {
             Ok(headers)
         }
 
-        fn preview(&self, image_path: PathBuf, mut opts: Options) -> Result<PathBuf> {
+        fn preview(&self, image_path: PathBuf, opts: Options) -> Result<PathBuf> {
             let csv = self.csv.as_ref().context("Load a CSV before previewing")?;
-            opts.columns.sort();
-
             let image = render(&image_path, csv, &opts, &self.font)?;
 
             fs::create_dir_all(&self.gen_dir)?;
@@ -137,12 +135,11 @@ mod worker {
         fn generate(
             &self,
             image_paths: Vec<PathBuf>,
-            mut opts: Options,
+            opts: Options,
             out_dir: PathBuf,
             on_progress: tauri::ipc::Channel<usize>,
         ) -> Result<PathBuf> {
             let csv = self.csv.as_ref().context("Load a CSV before generating")?;
-            opts.columns.sort();
 
             for (i, path) in image_paths.iter().enumerate() {
                 let file_stem = path
@@ -153,7 +150,7 @@ mod worker {
                 let file_name = format!("{file_stem}.annotated.png");
                 let out_path = out_dir.join(file_name);
 
-                let image = render(&path, csv, &opts, &self.font)?;
+                let image = render(path, csv, &opts, &self.font)?;
                 image.save(&out_path)?;
                 trace!(?out_path, "generated");
 
@@ -188,9 +185,8 @@ mod worker {
         font: &FontArc,
     ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
         let (boat, sail, date, time) =
-            parse_path_name(&image_path).context("Failed to parse file name")?;
+            parse_path_name(image_path).context("Failed to parse file name")?;
         let time = time.replace("-", ":");
-
         trace!(time, "render");
 
         let record_index = csv
@@ -202,7 +198,7 @@ mod worker {
         let record = &csv.records[record_index];
 
         let mut image = {
-            let buffer = image::open(&image_path)?.to_rgb8();
+            let buffer = image::open(image_path)?.to_rgb8();
             match opts.rotation {
                 0 => buffer,
                 1 => image::imageops::rotate90(&buffer),
@@ -216,7 +212,7 @@ mod worker {
         let color = Rgb(opts.text_color);
         let offset = 92;
 
-        let title = format!("{boat} / {sail}");
+        let title = format!("{boat} / {sail} - {date} {time}");
 
         draw_text_mut(&mut image, color, offset, offset, scale, font, &title);
 
